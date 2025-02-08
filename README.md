@@ -1,4 +1,4 @@
-# Data Valuation using Neural Network for Efficient Instruction Fine-Tuning
+# Data Valuation using Neural Networks for Efficient Instruction Fine-Tuning
 
 ![Overview of NN-CIFT](nncift_fig.png)
 
