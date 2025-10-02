@@ -2,4 +2,4 @@
 
 ![Overview of NN-CIFT](nncift_fig.png)
 
-Instructions to run coming soon... in submission to ARR.
+Instructions to run coming soon... NeurIPS acceptance!
