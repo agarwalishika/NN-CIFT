@@ -1,4 +1,4 @@
-# Data Valuation using Neural Networks for Efficient Instruction Fine-Tuning
+# Neural Networks for Learnable and Scalable Influence Estimation of Instruction Fine-Tuning Data
 
 ![Overview of NN-CIFT](nncift_fig.png)
 
