@@ -15,6 +15,13 @@ from argparse import ArgumentParser
 from config import *
 import matplotlib.pyplot as plt
 import os
+from sklearn.metrics import explained_variance_score
+
+def MSE(pred, output):
+    return ((pred - output) ** 2).cpu().detach()
+
+def FVU(pred, output):
+    return explained_variance_score(pred.cpu().detach(), output.reshape(pred.shape))
 
 class InfluenceNetwork(nn.Module):
     def __init__(self, dim, hidden_size=100):
@@ -56,7 +63,7 @@ class InfluenceNetwork(nn.Module):
         return batch_loss / num
 
 class LearningInfluence:
-    def __init__(self, type, existing_data_name="llm-blender/mix-instruct", new_data_name=None, length=1000000) -> None:
+    def __init__(self, type, existing_data_name="llm-blender/mix-instruct", new_data_name=None, length=1000000, embedding_model_name='BAAI/bge-large-en-v1.5') -> None:
         data = Data(existing_data_name, new_data_name, length)
         self.type = type
         self.existing_prompts, self.existing_references, self.existing_data = data.existing_prompts, data.existing_references, data.existing_data
@@ -64,7 +71,8 @@ class LearningInfluence:
         self.test_prompts, self.test_references, self.test_data = data.test_prompts, data.test_references, data.test_data
         self.dataset = data.dataset
 
-        self.embedding_model = SentenceTransformer('BAAI/bge-large-en-v1.5')
+        self.embedding_model_name = embedding_model_name
+        self.embedding_model = SentenceTransformer(embedding_model_name)
         self.embedding_input_size = 1 + (2 *self.embedding_model.encode("test sentence", normalize_embeddings=True).shape[0])
 
         self.experiment_code = ""
@@ -125,7 +133,7 @@ class LearningInfluence:
 
         ### TESITNG ###
         def test_on_set(existing_embeddings_d1, existing_embeddings_d2, new_embeddings, data_labels, pairwise_labels):
-            data_mse, data_zero_mse, data_random_mse, pairwise_mse, pairwise_zero_mse, pairwise_random_mse = 0, 0, 0, 0, 0, 0
+            data_mse, data_zero_mse, data_random_mse, data_mean_mse, pairwise_mse, pairwise_zero_mse, pairwise_random_mse, pairwise_mean_mse = 0, 0, 0, 0, 0, 0, 0, 0
             data_count, pairwise_count = 0, 0
             for i in range(len(existing_embeddings_d1)):
                 for j in range(len(existing_embeddings_d2)):
@@ -136,6 +144,7 @@ class LearningInfluence:
                     data_mse += ((pred - output) ** 2).cpu().detach()
                     data_zero_mse += ((torch.zeros_like(pred) - output) ** 2).cpu().detach()
                     data_random_mse += ((pred - torch.rand_like(pred)) ** 2).cpu().detach()
+                    data_mean_mse += ((pred - torch.zeros_like(pred)+pred.mean()) ** 2).cpu().detach()
                     data_count += 1
 
                 for j in range(len(new_embeddings)):
@@ -146,10 +155,11 @@ class LearningInfluence:
                     pairwise_mse += ((pred - output) ** 2).cpu().detach()
                     pairwise_zero_mse += ((torch.zeros_like(pred) - output) ** 2).cpu().detach()
                     pairwise_random_mse += ((pred - torch.rand_like(pred)) ** 2).cpu().detach()
+                    pairwise_mean_mse += ((pred - torch.zeros_like(pred)+pred.mean()) ** 2).cpu().detach()
                     pairwise_count += 1
             
-            return [data_mse / data_count, data_zero_mse / data_count, data_random_mse / data_count], \
-                [pairwise_mse / pairwise_count, pairwise_zero_mse / pairwise_count, pairwise_random_mse / pairwise_count]
+            return [data_mse / data_count, data_zero_mse / data_count, data_random_mse / data_count, data_mean_mse / data_count], \
+                [pairwise_mse / pairwise_count, pairwise_zero_mse / pairwise_count, pairwise_random_mse / pairwise_count, pairwise_mean_mse / pairwise_count]
             # return [0, 0]
     
         # for fun, test on q1
@@ -193,17 +203,19 @@ def run_multiple_rounds(influence):
 
     mses = mses / rounds
     df = {
-        "q1": {"data": mses[0], "pairwise": mses[1]},
-        "q2": {"data": mses[2], "pairwise": mses[3]},
-        "q3": {"data": mses[4], "pairwise": mses[5]},
-        "q4": {"data": mses[6], "pairwise": mses[7]},
+        "q1": {"data": mses[0][0], "pairwise": mses[1][0]},
+        "q2": {"data": mses[2][0], "pairwise": mses[3][0]},
+        "q3": {"data": mses[4][0], "pairwise": mses[5][0]},
+        "q4": {"data": mses[6][0], "pairwise": mses[7][0]},
     }
 
     df = pd.DataFrame.from_dict(df, orient="index")
     with open('learn_influence_results.txt', 'a+') as f:
+        f.write(influence.embedding_model_name)
         f.write(f'{influence.dataset}\n')
         f.write(tabulate(df, headers='keys', tablefmt='psql'))
         f.write('\n\n')
+    df.to_csv('learn_influence_results.txt', mode='a')
 
 def run_diff_subsets(influence: LearningInfluence):
     # import time
@@ -212,6 +224,7 @@ def run_diff_subsets(influence: LearningInfluence):
     # print(time.time() - start)
     # return
     subsets = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4]
+    # subsets = [0.05]
     results_file = f"influence_results_{influence.type}_{influence.dataset}.txt"
 
     if os.path.exists(results_file):
@@ -236,12 +249,12 @@ def run_diff_subsets(influence: LearningInfluence):
     subsets = np.array(subsets)
 
     # Create each subplot
-    colors = ['blue', 'red', 'green', 'orange']
+    colors = ['blue', 'red', 'green', 'orange', 'purple']
     for i in range(4):
         axes[i].plot(subsets, mses[:, i, 0], marker='o', color=colors[1], label='InfluenceNetwork')
         axes[i].hlines(y=np.nanmean(mses[:, i, 1]) - 0.1, xmin=subsets[0], xmax=subsets[-1], color=colors[0], label='Predicting 0')
         axes[i].hlines(y=np.nanmean(mses[:, i, 2]), xmin=subsets[0], xmax=subsets[-1], color=colors[2], label='Random')
-        # axes[i].plot(subsets, mses[:, i, 2], marker='*', color=colors[i], label='Random')
+        axes[i].plot(subsets, mses[:, i, 3], marker='*', color=colors[3], label='Mean')
         axes[i].set_xlabel('InfluenceNetwork training size (u)')
         axes[i].set_ylabel('Mean Squared Error')
         axes[i].set_title(labels[i])
@@ -278,18 +291,22 @@ def run_diff_subsets(influence: LearningInfluence):
 
 if __name__ == "__main__":
     argparser = ArgumentParser()
-    argparser.add_argument('--existing_data_name', type=str)
-    argparser.add_argument('--type', type=str)
-    argparser.add_argument('--length', type=int)
+    argparser.add_argument('--existing_data_name', type=str, default="cais/mmlu")
+    argparser.add_argument('--type', type=str, default="icl")
+    argparser.add_argument('--length', type=int, default=500)
     args = argparser.parse_args()
 
     # influence = LearningInfluence(args.existing_data_name, args.new_data_name, length=args.length)
     # run_diff_subsets(influence)
-    if args.type == ICL_CONSTANT:
-        influence = LearningInfluence(type=RANDOM_CONSTANT, existing_data_name=args.existing_data_name, length=args.length)
-        run_diff_subsets(influence)
-    elif args.type == SE_CONSTANT:
-        influence = LearningInfluence(type=SE_CONSTANT, existing_data_name=args.existing_data_name, length=args.length)
-        run_diff_subsets(influence)
-    # influence = LearningInfluence(type=SELECTIT_CONSTANT, existing_data_name=args.existing_data_name, length=args.length)
-    # run_diff_subsets(influence)
+    # for embedding_model_name in ['BAAI/bge-large-en-v1.5', "Qwen/Qwen3-Embedding-0.6B", "intfloat/e5-mistral-7b-instruct", "Snowflake/snowflake-arctic-embed-l-v2.0"]:
+    for embedding_model_name in ["Qwen/Qwen3-Embedding-0.6B"]:
+
+        if args.type == ICL_CONSTANT:
+            influence = LearningInfluence(type=ICL_CONSTANT, existing_data_name=args.existing_data_name, length=args.length, embedding_model_name=embedding_model_name)
+            # run_multiple_rounds(influence)
+            run_diff_subsets(influence)
+        elif args.type == SE_CONSTANT:
+            influence = LearningInfluence(type=SE_CONSTANT, existing_data_name=args.existing_data_name, length=args.length, embedding_model_name=embedding_model_name)
+            run_multiple_rounds(influence)
+        # influence = LearningInfluence(type=SELECTIT_CONSTANT, existing_data_name=args.existing_data_name, length=args.length)
+        # run_diff_subsets(influence)
