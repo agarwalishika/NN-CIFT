@@ -1,7 +1,8 @@
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 from datasets import load_dataset
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import pickle
@@ -14,25 +15,40 @@ from data_loader import Data
 from argparse import ArgumentParser
 from config import *
 import matplotlib.pyplot as plt
-import os
 from sklearn.metrics import explained_variance_score
+torch.manual_seed(5141)
 
 def MSE(pred, output):
-    return ((pred - output) ** 2).cpu().detach()
+    return ((torch.Tensor(pred) - torch.Tensor(output)) ** 2).mean().item()
 
 def FVU(pred, output):
-    return explained_variance_score(pred.cpu().detach(), output.reshape(pred.shape))
+    return explained_variance_score(torch.Tensor(pred), torch.Tensor(output))
 
 class InfluenceNetwork(nn.Module):
     def __init__(self, dim, hidden_size=100):
         super(InfluenceNetwork, self).__init__()
-        self.fc1 = nn.Linear(dim, hidden_size)
-        self.activate = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_size, 1)
+        self.net = nn.Sequential(
+            nn.Linear(dim, hidden_size * 2),
+            nn.LayerNorm(hidden_size * 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_size * 2, hidden_size * 4),
+            nn.LayerNorm(hidden_size * 4),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_size * 4, hidden_size * 2),
+            nn.LayerNorm(hidden_size * 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1),
+        )
 
     def forward(self, x):
         x = x.float().to(device)
-        return self.fc2(self.activate(self.fc1(x)))
+        return self.net(x)
     
     def train_NN_batch(self, X, Y, num_epochs=20, lr=0.0001, batch_size=64):
         self.train()
@@ -78,7 +94,7 @@ class LearningInfluence:
         self.experiment_code = ""
 
     
-    def learn_influence(self, utility_file, subset=0.5):
+    def learn_influence(self, utility_file, loss_func, subset=0.5):
         data_influence = InfluenceNetwork(self.embedding_input_size).to(device)
         pairwise_influence = InfluenceNetwork(self.embedding_input_size).to(device)
 
@@ -133,33 +149,36 @@ class LearningInfluence:
 
         ### TESITNG ###
         def test_on_set(existing_embeddings_d1, existing_embeddings_d2, new_embeddings, data_labels, pairwise_labels):
-            data_mse, data_zero_mse, data_random_mse, data_mean_mse, pairwise_mse, pairwise_zero_mse, pairwise_random_mse, pairwise_mean_mse = 0, 0, 0, 0, 0, 0, 0, 0
-            data_count, pairwise_count = 0, 0
+            data_mse, data_zero_mse, data_random_mse, data_mean_mse, pairwise_mse, pairwise_zero_mse, pairwise_random_mse, pairwise_mean_mse = [], [], [], [], [], [], [], []
+            data_outputs, pairwise_outputs = [], []
+
             for i in range(len(existing_embeddings_d1)):
                 for j in range(len(existing_embeddings_d2)):
                     input = np.concatenate((existing_embeddings_d1[i], np.array([0]), existing_embeddings_d2[j]))
-                    pred = data_influence(torch.from_numpy(input))
+                    pred = data_influence(torch.from_numpy(input)).cpu().detach()
                     output = data_labels[i][j]
 
-                    data_mse += ((pred - output) ** 2).cpu().detach()
-                    data_zero_mse += ((torch.zeros_like(pred) - output) ** 2).cpu().detach()
-                    data_random_mse += ((pred - torch.rand_like(pred)) ** 2).cpu().detach()
-                    data_mean_mse += ((pred - torch.zeros_like(pred)+pred.mean()) ** 2).cpu().detach()
-                    data_count += 1
+                    data_mse.append(pred.item())
+                    data_zero_mse.append(0)
+                    data_random_mse.append(torch.rand_like(pred).item())
+                    data_mean_mse.append((torch.zeros_like(pred)+pred.mean()).item())
+                    data_outputs.append(output.item())
 
                 for j in range(len(new_embeddings)):
                     input = np.concatenate((existing_embeddings_d1[i], np.array([0]), new_embeddings[j]))
-                    pred = pairwise_influence(torch.from_numpy(input))
+                    pred = pairwise_influence(torch.from_numpy(input)).cpu().detach()
                     output = pairwise_labels[i][j]
 
-                    pairwise_mse += ((pred - output) ** 2).cpu().detach()
-                    pairwise_zero_mse += ((torch.zeros_like(pred) - output) ** 2).cpu().detach()
-                    pairwise_random_mse += ((pred - torch.rand_like(pred)) ** 2).cpu().detach()
-                    pairwise_mean_mse += ((pred - torch.zeros_like(pred)+pred.mean()) ** 2).cpu().detach()
-                    pairwise_count += 1
+                    pairwise_mse.append(pred.item())
+                    pairwise_zero_mse.append(0)
+                    pairwise_random_mse.append(torch.rand_like(pred).item())
+                    pairwise_mean_mse.append((torch.zeros_like(pred)+pred.mean()).item())
+                    pairwise_outputs.append(output.item())
             
-            return [data_mse / data_count, data_zero_mse / data_count, data_random_mse / data_count, data_mean_mse / data_count], \
-                [pairwise_mse / pairwise_count, pairwise_zero_mse / pairwise_count, pairwise_random_mse / pairwise_count, pairwise_mean_mse / pairwise_count]
+            return [loss_func(data_mse, data_outputs), loss_func(data_zero_mse, data_outputs), loss_func(data_random_mse, data_outputs), loss_func(data_mean_mse, data_outputs)], \
+                    [loss_func(pairwise_mse, pairwise_outputs), loss_func(pairwise_zero_mse, pairwise_outputs), loss_func(pairwise_random_mse, pairwise_outputs), loss_func(pairwise_mean_mse, pairwise_outputs)]
+            # return [data_mse / data_count, data_zero_mse / data_count, data_random_mse / data_count, data_mean_mse / data_count], \
+            #     [pairwise_mse / pairwise_count, pairwise_zero_mse / pairwise_count, pairwise_random_mse / pairwise_count, pairwise_mean_mse / pairwise_count]
             # return [0, 0]
     
         # for fun, test on q1
@@ -217,15 +236,15 @@ def run_multiple_rounds(influence):
         f.write('\n\n')
     df.to_csv('learn_influence_results.txt', mode='a')
 
-def run_diff_subsets(influence: LearningInfluence):
+def run_diff_subsets(influence: LearningInfluence, loss_name, loss_func):
     # import time
     # start = time.time()
     # influence.learn_influence(utility_file, subset=0.05)
     # print(time.time() - start)
     # return
-    subsets = [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4]
+    subsets = [0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
     # subsets = [0.05]
-    results_file = f"influence_results_{influence.type}_{influence.dataset}.txt"
+    results_file = f"influence_results_loss{loss_name}_{influence.type}_{influence.dataset}.txt"
 
     if os.path.exists(results_file):
         with open(results_file, 'rb') as f:
@@ -233,11 +252,11 @@ def run_diff_subsets(influence: LearningInfluence):
     else:
         mses = []
         for subset in tqdm(subsets):
-            mses.append(influence.learn_influence(utility_file, subset=subset))
+            mses.append(influence.learn_influence(utility_file=utility_file, loss_func=loss_func, subset=subset))
         
-        mses = np.array(mses)
         with open(results_file, 'wb+') as f:
             pickle.dump(mses, f)
+        mses = np.array(mses)
 
     # Plot each column of mses as a separate line
     labels = ['Q1', 'Q2', 'Q3', 'Q4']
@@ -250,6 +269,7 @@ def run_diff_subsets(influence: LearningInfluence):
 
     # Create each subplot
     colors = ['blue', 'red', 'green', 'orange', 'purple']
+    ylabel = "Mean Squared Error" if "mse" in loss_func.__name__ else "Explained Variance Score"
     for i in range(4):
         axes[i].plot(subsets, mses[:, i, 0], marker='o', color=colors[1], label='InfluenceNetwork')
         axes[i].hlines(y=np.nanmean(mses[:, i, 1]) - 0.1, xmin=subsets[0], xmax=subsets[-1], color=colors[0], label='Predicting 0')
@@ -260,26 +280,6 @@ def run_diff_subsets(influence: LearningInfluence):
         axes[i].set_title(labels[i])
         axes[i].grid(True)
         axes[i].legend()
-            
-    # labels = ['Q1', 'Q2', 'Q3', 'Q4']
-    # colors = ['blue', 'red', 'green', 'orange']
-
-    # # Create a single plot
-    # plt.figure(figsize=(10, 7))
-
-    # # Plot each dataset with its own color
-    # for i in range(4):
-    #     plt.plot(subsets, mses[:, i, 0], marker='o', color=colors[i], label=f'{labels[i]} - InfluenceNetwork')
-    #     plt.plot(subsets, mses[:, i, 1], marker='x', color=colors[i], linestyle='--', label=f'{labels[i]} - Predicting 0')
-    #     plt.plot(subsets, mses[:, i, 2], marker='*', color=colors[i], linestyle='-.', label=f'{labels[i]} - Random')
-
-    # # Customize the plot
-    # plt.xlabel('InfluenceNetwork training size (u%)')
-    # plt.ylabel('Mean Squared Error')
-    # plt.title('Combined Plot of Mean Squared Errors')
-    # plt.grid(True)
-    # plt.legend()
-    # plt.show()
 
     # Adjust layout to prevent overlap
     plt.tight_layout()
@@ -287,14 +287,19 @@ def run_diff_subsets(influence: LearningInfluence):
     # Show the plot
     # plt.show()
 
-    plt.savefig(f"influence_results_{influence.type}_{influence.dataset}.png")
+    plt.savefig(f"influence_results_{loss_func.__name__}_{influence.type}_{influence.dataset}.png")
 
 if __name__ == "__main__":
     argparser = ArgumentParser()
-    argparser.add_argument('--existing_data_name', type=str, default="cais/mmlu")
+    argparser.add_argument('--existing_data_name', type=str, default="llm-blender/mix-instruct")
     argparser.add_argument('--type', type=str, default="icl")
-    argparser.add_argument('--length', type=int, default=500)
+    argparser.add_argument('--length', type=int, default=1000)
+    argparser.add_argument('--loss', type=str, default="fvu")
     args = argparser.parse_args()
+
+    loss_func = MSE
+    if "fvu" in args.loss:
+        loss_func = FVU
 
     # influence = LearningInfluence(args.existing_data_name, args.new_data_name, length=args.length)
     # run_diff_subsets(influence)
@@ -304,9 +309,9 @@ if __name__ == "__main__":
         if args.type == ICL_CONSTANT:
             influence = LearningInfluence(type=ICL_CONSTANT, existing_data_name=args.existing_data_name, length=args.length, embedding_model_name=embedding_model_name)
             # run_multiple_rounds(influence)
-            run_diff_subsets(influence)
+            run_diff_subsets(influence, args.loss, loss_func)
         elif args.type == SE_CONSTANT:
             influence = LearningInfluence(type=SE_CONSTANT, existing_data_name=args.existing_data_name, length=args.length, embedding_model_name=embedding_model_name)
-            run_multiple_rounds(influence)
+            run_multiple_rounds(influence, loss_func)
         # influence = LearningInfluence(type=SELECTIT_CONSTANT, existing_data_name=args.existing_data_name, length=args.length)
         # run_diff_subsets(influence)

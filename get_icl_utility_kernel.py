@@ -1,3 +1,4 @@
+import os
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -9,7 +10,7 @@ from data_loader import Data
 from config import *
 
 class ModelDependentICLUtility:
-    def __init__(self, model_name="distilbert/distilgpt2", device='cuda' if torch.cuda.is_available() else 'cpu') -> None:
+    def __init__(self, model_name="Qwen/Qwen2.5-3B-Instruct", device='cuda' if torch.cuda.is_available() else 'cpu') -> None:
         """
         Initialize the ModelDependentICLUtility class.
 
@@ -237,7 +238,7 @@ class ModelDependentICLUtility:
 
         # Prepare batch inputs
         without_icl_batches, with_icl_batches, batched_original_indices = self.prepare_batch_inputs(
-            valid_prompts, valid_responses, train_prompts, train_responses
+            valid_prompts, valid_responses, train_prompts, train_responses, max_length=1000
         )
         print('batched!')
         
@@ -259,6 +260,8 @@ class ModelDependentICLUtility:
 
         # Compute distances with ICL examples and populate utility kernel
         for j, icl_batches_for_example in tqdm(enumerate(with_icl_batches), total=len(with_icl_batches)):
+            if j == 352: 
+                ishika = 9
             for batch, indices in zip(icl_batches_for_example, batched_original_indices):
                 input_ids, attention_masks, token_type_ids = batch
                 distances = self.compute_model_prediction_probability_distances(input_ids, attention_masks, token_type_ids)
@@ -283,10 +286,10 @@ class ModelDependentICLUtility:
 
 if __name__ == "__main__":
     argparser = ArgumentParser()
-    argparser.add_argument('--existing_data_name', type=str)
-    argparser.add_argument('--new_data_name', type=str)
-    argparser.add_argument('--length', type=int)
-    argparser.add_argument('--between', type=str)
+    argparser.add_argument('--existing_data_name', type=str, default='cais/mmlu')
+    argparser.add_argument('--new_data_name', type=str, default='cais/mmlu')
+    argparser.add_argument('--length', type=int, default=2000)
+    argparser.add_argument('--between', type=str, default='data')  # data or pairwise
     args = argparser.parse_args()
 
     data = Data(args.existing_data_name, args.new_data_name, args.length)

@@ -27,6 +27,10 @@ class Dataloader:
             return self.get_hotpot_train()
         if "alpaca" in name:
             return self.get_alpaca_train()
+        if "mmlu" in name:
+            return self.get_mmlu_train()
+        if "lmarena" in name:
+            return self.get_lmarena_train()
         0/0
     
     def get_new(self, name):
@@ -36,6 +40,10 @@ class Dataloader:
             return self.get_hotpot_valid()
         if "alpaca" in name:
             return self.get_alpaca_valid()
+        if "mmlu" in name:
+            return self.get_mmlu_valid()
+        if "lmarena" in name:
+            return self.get_lmarena_valid()
         0/0
     
     def get_test(self, name):
@@ -45,6 +53,10 @@ class Dataloader:
             return self.get_hotpot_test()
         if "alpaca" in name:
             return self.get_alpaca_test()
+        if "mmlu" in name:
+            return self.get_mmlu_test()
+        if "lmarena" in name:
+            return self.get_lmarena_test()
         0/0
     
     ############ MIX-INSTRUCT ###############
@@ -129,3 +141,45 @@ class Dataloader:
     
     def get_alpaca_test(self):
         return self.get_alpaca('test')
+
+    ############   MMLU    ###############
+    def get_mmlu(self, split):
+        ds = load_dataset("cais/mmlu", "all")[split].to_pandas()
+
+        prompts = ds['question']
+        references = ds.apply(lambda x: str(x['answer']), axis=1)
+        data = ds.apply(lambda x: x['question'] + ":\n" + "\n".join(["A. ", "B. ", "C. ", "D. "] + x['choices']), axis=1)
+        return list(prompts), list(references), list(data)
+
+    def get_mmlu_train(self):
+        return self.get_mmlu('auxiliary_train')
+    
+    def get_mmlu_valid(self):
+        return self.get_mmlu('validation')
+    
+    def get_mmlu_test(self):
+        return self.get_mmlu('test')
+
+    ############   LMARENA    ###############
+    def get_lmarena(self, split):
+        import json
+        ds = load_dataset("ishikaa/lmarena_2024")['train'].to_pandas()
+
+        if split == 'train':
+            ds = ds[:40000]
+        else:
+            ds = ds[40000:]
+        
+        prompts = ds['prompt'].apply(lambda x: json.loads(x)[0])
+        references = ds.apply(lambda x: json.loads(x['response_a'])[0] if x['winner'] == "model_a" else json.loads(x['response_b'])[0], axis=1)
+        data = prompts + "\n##Answer: " + references
+        return list(prompts), list(references), list(data)
+
+    def get_lmarena_train(self):
+        return self.get_lmarena('train')
+    
+    def get_lmarena_valid(self):
+        return self.get_lmarena('valid')
+    
+    def get_lmarena_test(self):
+        0/0

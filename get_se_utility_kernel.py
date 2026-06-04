@@ -7,7 +7,6 @@ import torch
 from argparse import ArgumentParser
 from data_loader import Data
 from config import *
-from sympy import use
 import torch
 import faiss
 import numpy as np
@@ -193,9 +192,16 @@ class ModelIndependentICLUtility:
     def calculate_se_utility(self, data1_prompts, data1_references, data2_prompts=None, data2_references=None, metric='cosine', 
                         batch_size=10000, scaling=None, kw=0.1, device='cuda'):
         
-        tensor1 = encode(data1_prompts, data1_references)
-        tensor2 = None if data2_prompts is None else encode(data2_prompts, data2_references)
-        return self.compute_pairwise_similarities(tensor1, tensor2, metric, batch_size, scaling, kw, device)
+        if data2_prompts == None:
+            data2_prompts = data1_prompts
+            data2_references = data1_references
+        from sentence_transformers import SentenceTransformer
+        embedding_model = SentenceTransformer('BAAI/bge-large-en-v1.5')
+
+        data1_embeddings = embedding_model.encode([str(p) + " " + str(r) for p, r in zip(data1_prompts, data1_references)])
+        data2_embeddings = embedding_model.encode([str(p) + " " + str(r) for p, r in zip(data2_prompts, data2_references)])
+        scores = embedding_model.similarity(data1_embeddings, data2_embeddings)
+        return scores
     
     def compute_pairwise_similarities(self, tensor1, tensor2=None, metric='cosine', 
                         batch_size=10000, scaling=None, kw=0.1, device='cuda'):
